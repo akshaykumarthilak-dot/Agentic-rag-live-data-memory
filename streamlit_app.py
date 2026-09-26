@@ -16,23 +16,65 @@ st.set_page_config(
 # AUTOMATIC KNOWLEDGE-BASE INITIALIZATION
 # ---------------------------------------------------------
 
+# ---------------------------------------------------------
+# AUTOMATIC KNOWLEDGE-BASE INITIALIZATION
+# ---------------------------------------------------------
+
+KNOWLEDGE_BASE_VERSION = "project-nova-v2"
+
+
 def initialize_knowledge_base():
 
-    vector_store_path = os.path.join(
+    data_dir = os.path.join(
         os.path.dirname(__file__),
-        "data",
+        "data"
+    )
+
+    vector_store_path = os.path.join(
+        data_dir,
         "vector_store.pkl"
     )
 
-    if not os.path.exists(vector_store_path):
+    version_path = os.path.join(
+        data_dir,
+        "knowledge_base_version.txt"
+    )
 
-        with st.spinner("Building knowledge base..."):
+    current_version = ""
+
+    if os.path.exists(version_path):
+
+        with open(
+            version_path,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            current_version = f.read().strip()
+
+    # Rebuild the vector store if the knowledge-base
+    # version has changed.
+    if (
+        not os.path.exists(vector_store_path)
+        or current_version != KNOWLEDGE_BASE_VERSION
+    ):
+
+        if os.path.exists(vector_store_path):
+            os.remove(vector_store_path)
+
+        with st.spinner(
+            "Building knowledge base..."
+        ):
+
             ingest_docs()
 
+        with open(
+            version_path,
+            "w",
+            encoding="utf-8"
+        ) as f:
 
-# Run automatically on local machine and Streamlit Cloud
-initialize_knowledge_base()
-
+            f.write(KNOWLEDGE_BASE_VERSION)
 
 # ---------------------------------------------------------
 # PAGE HEADER
