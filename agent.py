@@ -1,156 +1,235 @@
 """
 agent.py
 --------
-The "agentic" half of Agentic RAG.
+No-cost Agentic RAG implementation.
 
-This is a ReAct-style loop (Reason -> Act -> Observe -> repeat):
+The agent uses:
+1. Local semantic search over documents
+2. Local semantic search over conversation memory
+3. Simple agentic action selection
+4. Persistent episodic memory
 
-  1. The LLM sees the user's question + a list of available actions.
-  2. It picks ONE action and returns it as JSON.
-  3. We execute that action in Python (search memory, call a live tool, etc).
-  4. We feed the result back to the LLM as an "observation".
-  5. Repeat until the LLM is confident enough to give a final_answer,
-     or we hit MAX_AGENT_STEPS (a safety cap against infinite loops).
-
-This is deliberately implemented by hand (no LangChain/LlamaIndex) so that
-every moving part is visible and you can explain each one line-by-line in
-an interview - that transparency is worth more to a technical panel than
-a framework you can't fully account for.
+No paid LLM API is required.
 """
 
-import json
 import re
-
-from anthropic import Anthropic
 
 import config
 from memory_store import VectorMemoryStore
-from tools import TOOL_REGISTRY
-
-SYSTEM_PROMPT = """You are an autonomous research assistant with three ways to gather information
-before answering:
-
-1. search_knowledge - search the user's private document + conversation memory (RAG).
-   Use this FIRST for anything that might be in the user's own uploaded documents
-   or something discussed earlier in this conversation.
-2. wikipedia_search - look up a live, current factual summary of a topic/entity.
-3. get_current_weather - get live current weather for a named city.
-
-On every turn, respond with ONLY a JSON object, no other text, in one of these two shapes:
-
-To take an action:
-{"thought": "<why you're doing this>", "action": "<search_knowledge|wikipedia_search|get_current_weather>", "action_input": "<string input for the action>"}
-
-To answer the user once you have enough information:
-{"thought": "<why you're confident now>", "action": "final_answer", "action_input": "<the full answer to give the user>"}
-
-Rules:
-- Always try search_knowledge at least once before concluding you need live data,
-  UNLESS the question is clearly about something current/real-time (weather, news, "latest").
-- Never call the same action with the same input twice.
-- If tools return nothing useful after 2-3 tries, give the best answer you can and say
-  what you couldn't confirm.
-"""
-
-
-def _extract_json(raw: str) -> dict:
-    """LLMs sometimes wrap JSON in markdown fences or add stray text - strip that defensively."""
-    raw = raw.strip()
-    fenced = re.search(r"\{.*\}", raw, re.DOTALL)
-    if fenced:
-        raw = fenced.group(0)
-    return json.loads(raw)
 
 
 class AgenticRAG:
-    def __init__(self):
-        self.client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
-        self.memory = VectorMemoryStore()
-        self.conversation_history = []  # short-term buffer for THIS session only
 
-    # ---------- action implementations ----------
+    def __init__(self):
+        self.memory = VectorMemoryStore()
+        self.conversation_history = []
+
+    # ---------------------------------------------------------
+    # KNOWLEDGE SEARCH
+    # ---------------------------------------------------------
 
     def _search_knowledge(self, query: str) -> str:
-        results = self.memory.search(query, top_k=config.TOP_K_RETRIEVAL, source_filter="any")
+
+        results = self.memory.search(
+            query,
+            top_k=config.TOP_K_RETRIEVAL,
+            source_filter="any"
+        )
+
         if not results:
-            return "No relevant information found in documents or past conversations."
+            return "No relevant information was found in the knowledge base."
+
         formatted = []
-        for r in results:
-            tag = "[Document]" if r.source == "document" else "[Past conversation]"
-            formatted.append(f"{tag} {r.text}")
-        return "\n---\n".join(formatted)
 
-    def _execute_action(self, action: str, action_input: str) -> str:
-        if action == "search_knowledge":
-            return self._search_knowledge(action_input)
-        if action in TOOL_REGISTRY:
-            return TOOL_REGISTRY[action]["fn"](action_input)
-        return f"Unknown action '{action}'."
+        for result in results:
 
-    # ---------- main loop ----------
+            if result.source == "document":
+                tag = "[Document]"
+            else:
+                tag = "[Past conversation]"
+
+            formatted.append(
+                f"{tag} {result.text}"
+            )
+
+        return "\n\n".join(formatted)
+
+    # ---------------------------------------------------------
+    # SIMPLE AGENT DECISION
+    # ---------------------------------------------------------
+
+    def _choose_action(self, query: str) -> str:
+
+        query_lower = query.lower()
+
+        knowledge_keywords = [
+            "what",
+            "why",
+            "how",
+            "explain",
+            "define",
+            "tell me",
+            "project",
+            "agentic",
+            "rag",
+            "vector",
+            "embedding",
+            "memory",
+            "document",
+            "conversation",
+            "previous",
+            "remember"
+        ]
+
+        if any(keyword in query_lower for keyword in knowledge_keywords):
+            return "search_knowledge"
+
+        # Default action for unknown/general questions
+        return "search_knowledge"
+
+    # ---------------------------------------------------------
+    # GENERATE ANSWER FROM RETRIEVED INFORMATION
+    # ---------------------------------------------------------
+
+    def _generate_answer(self, question: str, context: str) -> str:
+
+        if not context or context.startswith("No relevant"):
+            return (
+                "I couldn't find relevant information in my current "
+                "knowledge base for that question."
+            )
+
+        # Extract individual retrieved pieces
+        parts = context.split("\n\n")
+
+        useful_parts = []
+
+        for part in parts:
+
+            cleaned = re.sub(
+                r"^\[(Document|Past conversation)\]\s*",
+                "",
+                part
+            )
+
+            if cleaned.strip():
+                useful_parts.append(cleaned.strip())
+
+        if not useful_parts:
+            return (
+                "I couldn't find enough relevant information "
+                "to answer that question."
+            )
+
+        # Avoid simply dumping too much information
+        answer_parts = useful_parts[:3]
+
+        answer = (
+            "Based on the information available in my knowledge base:\n\n"
+        )
+
+        for part in answer_parts:
+            answer += f"• {part}\n\n"
+
+        return answer.strip()
+
+    # ---------------------------------------------------------
+    # MEMORY
+    # ---------------------------------------------------------
+
+    def _remember_exchange(self, question: str, answer: str):
+
+        summary = (
+            f"Question: {question}\n"
+            f"Answer: {answer}"
+        )
+
+        self.memory.add(
+            summary,
+            source="episodic",
+            metadata={
+                "type": "qa_pair"
+            }
+        )
+
+        self.conversation_history.append(
+            {
+                "question": question,
+                "answer": answer
+            }
+        )
+
+    # ---------------------------------------------------------
+    # MAIN AGENT LOOP
+    # ---------------------------------------------------------
 
     def ask(self, user_query: str, verbose: bool = True) -> str:
-        messages = [
-            {"role": "user", "content": f"User question: {user_query}"}
-        ]
+
+        if not user_query.strip():
+            return "Please enter a question."
+
         seen_actions = set()
 
         for step in range(config.MAX_AGENT_STEPS):
-            response = self.client.messages.create(
-                model=config.LLM_MODEL,
-                max_tokens=config.MAX_TOKENS,
-                system=SYSTEM_PROMPT,
-                messages=messages,
-            )
-            raw_text = response.content[0].text
 
-            try:
-                parsed = _extract_json(raw_text)
-            except (json.JSONDecodeError, IndexError):
-                # Model didn't follow the format - treat its raw text as the final answer
-                # rather than crashing the whole agent.
-                return raw_text
-
-            action = parsed.get("action")
-            action_input = parsed.get("action_input", "")
+            action = self._choose_action(user_query)
 
             if verbose:
-                print(f"\n[Step {step + 1}] Thought: {parsed.get('thought', '')}")
-                print(f"[Step {step + 1}] Action: {action} -> {action_input!r}")
+                print(
+                    f"\n[Step {step + 1}] "
+                    f"Action: {action}"
+                )
 
-            if action == "final_answer":
-                self._remember_exchange(user_query, action_input)
-                return action_input
+            # Prevent repeating exactly the same action forever
+            action_key = (
+                action,
+                user_query.strip().lower()
+            )
 
-            action_key = (action, action_input)
             if action_key in seen_actions:
-                # Break potential infinite loops where the model repeats itself
-                messages.append({"role": "assistant", "content": raw_text})
-                messages.append({"role": "user",
-                                  "content": "Observation: You already tried this exact action. "
-                                             "Please give a final_answer with what you know."})
-                seen_actions.add(action_key)
-                continue
+                break
+
             seen_actions.add(action_key)
 
-            observation = self._execute_action(action, action_input)
+            # -------------------------------------------------
+            # Execute action
+            # -------------------------------------------------
+
+            if action == "search_knowledge":
+
+                observation = self._search_knowledge(
+                    user_query
+                )
+
+            else:
+
+                observation = (
+                    "No action was available for this question."
+                )
+
             if verbose:
-                print(f"[Step {step + 1}] Observation: {observation[:200]}...")
+                print(
+                    f"[Step {step + 1}] "
+                    f"Observation: {observation[:300]}..."
+                )
 
-            messages.append({"role": "assistant", "content": raw_text})
-            messages.append({"role": "user", "content": f"Observation: {observation}"})
+            # -------------------------------------------------
+            # Generate final answer
+            # -------------------------------------------------
 
-        # Safety net if we exhaust MAX_AGENT_STEPS without a final_answer
-        return "I wasn't able to reach a confident answer within my step limit. Here's what I found:\n" + \
-               "\n".join(m["content"] for m in messages if m["role"] == "user")[-800:]
+            answer = self._generate_answer(
+                user_query,
+                observation
+            )
 
-    def _remember_exchange(self, question: str, answer: str):
-        """
-        This is the 'memory' feedback loop: after answering, store a compact
-        summary of the exchange as an episodic memory so future questions
-        (even in a later session, since this is persisted to disk) can
-        reference what was previously discussed.
-        """
-        summary = f"Q: {question}\nA: {answer}"
-        self.memory.add(summary, source="episodic", metadata={"type": "qa_pair"})
-        self.conversation_history.append({"question": question, "answer": answer})
+            self._remember_exchange(
+                user_query,
+                answer
+            )
+
+            return answer
+
+        return (
+            "I couldn't complete the reasoning process. "
+            "Please try asking the question in another way."
+        )
