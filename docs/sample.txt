@@ -1,23 +1,19 @@
-Agentic RAG is an AI architecture that combines Retrieval-Augmented Generation with autonomous decision making.
+Project Nova Internal Notes
 
-A traditional RAG system retrieves relevant information from a knowledge base before generating an answer.
+Project Nova is an internal onboarding platform built by the Platform Engineering team.
+It uses a Java Spring Boot backend with a PostgreSQL database, and a React frontend.
+Authentication is handled via JWT tokens with a 24-hour expiry, refreshed automatically
+by the frontend's Axios interceptor.
 
-Agentic RAG adds an AI agent that can decide when to retrieve information, when to use memory, and when to use external tools.
+The deployment pipeline runs on Jenkins: every merge to main triggers a build, a suite
+of unit and integration tests, and a Docker image push to the internal registry.
+Deployments to staging are automatic; production deployments require manual approval
+from a team lead.
 
-Vector embeddings represent text as numerical vectors. Similar pieces of text produce vectors that are close to each other in vector space.
+Common onboarding issues reported by new hires:
+1. VPN certificate not installed before day one, blocking access to internal repos.
+2. Local environment setup taking longer than expected due to missing Java 17 SDK.
+3. Confusion about which Slack channel to use for IT support versus HR queries.
 
-Semantic search compares the meaning of a user's question with stored document chunks and retrieves the most relevant information.
-
-Long-term memory allows an AI application to remember useful information from previous conversations.
-
-Short-term memory contains information from the current conversation.
-
-Tools allow an AI agent to perform actions such as searching data, calculating values, reading files, or calling external APIs.
-
-The Agentic RAG system in this project uses sentence-transformers to create embeddings locally. This means the retrieval process does not require a paid API.
-
-The project stores document chunks and episodic conversation memories in the same vector index. Documents are marked as "document" and conversation memories are marked as "episodic".
-
-The agent first receives a user question, searches its knowledge base using semantic similarity, retrieves relevant information, generates an answer from the retrieved information, and stores the question and answer as episodic memory.
-
-The goal of this project is to build an Agentic RAG system that can retrieve information, use conversation memory, select appropriate actions, and provide useful answers without requiring a paid LLM API.
+The team's on-call rotation is weekly, and incidents are tracked in Jira under the
+NOVA-OPS project key. Postmortems are required for any incident rated Sev-1 or Sev-2.

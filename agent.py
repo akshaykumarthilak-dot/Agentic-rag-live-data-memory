@@ -30,26 +30,42 @@ class AgenticRAG:
 
     def _search_knowledge(self, query: str) -> str:
 
-        results = self.memory.search(
-            query,
-            top_k=config.TOP_K_RETRIEVAL,
-            source_filter="any"
+    # 1. Search documents first
+        document_results = self.memory.search(
+        query,
+        top_k=config.TOP_K_RETRIEVAL,
+        source_filter="document"
         )
 
-        if not results:
+    # If documents contain relevant information, use them first
+        if document_results:
+
+            formatted = []
+
+            for result in document_results:
+
+                formatted.append(
+                    f"[Document] {result.text}"
+                )
+
+            return "\n\n".join(formatted)
+
+    # 2. If no document information exists, search memory
+        memory_results = self.memory.search(
+            query,
+            top_k=config.TOP_K_RETRIEVAL,
+            source_filter="episodic"
+        )
+
+        if not memory_results:
             return "No relevant information was found in the knowledge base."
 
         formatted = []
 
-        for result in results:
-
-            if result.source == "document":
-                tag = "[Document]"
-            else:
-                tag = "[Past conversation]"
+        for result in memory_results:
 
             formatted.append(
-                f"{tag} {result.text}"
+                f"[Past conversation] {result.text}"
             )
 
         return "\n\n".join(formatted)
