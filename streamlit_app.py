@@ -12,14 +12,6 @@ st.set_page_config(
 )
 
 
-# ---------------------------------------------------------
-# AUTOMATIC KNOWLEDGE-BASE INITIALIZATION
-# ---------------------------------------------------------
-
-# ---------------------------------------------------------
-# AUTOMATIC KNOWLEDGE-BASE INITIALIZATION
-# ---------------------------------------------------------
-
 KNOWLEDGE_BASE_VERSION = "project-nova-v2"
 
 
@@ -75,6 +67,10 @@ def initialize_knowledge_base():
         ) as f:
 
             f.write(KNOWLEDGE_BASE_VERSION)
+
+
+# Initialize knowledge base
+initialize_knowledge_base()
 
 # ---------------------------------------------------------
 # PAGE HEADER
