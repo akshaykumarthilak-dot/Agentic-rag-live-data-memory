@@ -15,6 +15,7 @@ No paid LLM API is required.
 """
 
 import re
+import uuid
 
 import config
 from memory_store import VectorMemoryStore
@@ -23,9 +24,52 @@ from tools import TOOL_REGISTRY
 
 class AgenticRAG:
 
-    def __init__(self):
+    def __init__(self, session_id: str = None):
+
         self.memory = VectorMemoryStore()
+
+        # Unique ID for the current conversation
+        self.session_id = (
+            session_id
+            if session_id
+            else str(uuid.uuid4())
+        )
+
+        # Short-term memory
+        # Stores recent messages from this session.
         self.conversation_history = []
+
+        # Maximum number of recent exchanges
+        # kept in short-term memory.
+        self.max_history = 6
+
+    # ---------------------------------------------------------
+    # CONVERSATION CONTEXT
+    # ---------------------------------------------------------
+
+    def _build_contextual_query(self, user_query: str) -> str:
+
+        if not self.conversation_history:
+            return user_query
+
+        recent_history = self.conversation_history[-3:]
+
+        context_parts = []
+
+        for item in recent_history:
+
+            context_parts.append(
+                f"Previous question: {item['question']}\n"
+                f"Previous answer: {item['answer']}"
+            )
+
+        conversation_context = "\n\n".join(context_parts)
+
+        return (
+            f"Conversation context:\n"
+            f"{conversation_context}\n\n"
+            f"Current question: {user_query}"
+        )
 
     # ---------------------------------------------------------
     # KNOWLEDGE SEARCH
@@ -391,25 +435,40 @@ class AgenticRAG:
     # ---------------------------------------------------------
     # MEMORY
     # ---------------------------------------------------------
+        # ---------------------------------------------------------
+    # SHORT-TERM MEMORY
+    # ---------------------------------------------------------
 
+    def _get_recent_context(self) -> str:
+
+        if not self.conversation_history:
+            return ""
+
+        recent = self.conversation_history[
+            -self.max_history:
+        ]
+
+        context_parts = []
+
+        for item in recent:
+
+            context_parts.append(
+                f"User: {item['question']}\n"
+                f"Assistant: {item['answer']}"
+            )
+
+        return "\n\n".join(
+            context_parts
+        )
     def _remember_exchange(
         self,
         question: str,
         answer: str
     ):
 
-        summary = (
-            f"Question: {question}\n"
-            f"Answer: {answer}"
-        )
-
-        self.memory.add(
-            summary,
-            source="episodic",
-            metadata={
-                "type": "qa_pair"
-            }
-        )
+        # -----------------------------------------------------
+        # SHORT-TERM MEMORY
+        # -----------------------------------------------------
 
         self.conversation_history.append(
             {
@@ -418,6 +477,41 @@ class AgenticRAG:
             }
         )
 
+        # Keep only recent conversation
+        if len(
+            self.conversation_history
+        ) > self.max_history:
+
+            self.conversation_history = (
+                self.conversation_history[
+                    -self.max_history:
+                ]
+            )
+
+        # -----------------------------------------------------
+        # LONG-TERM EPISODIC MEMORY
+        # -----------------------------------------------------
+
+        summary = (
+            f"Question: {question}\n"
+            f"Answer: {answer}"
+        )
+
+        self.memory.add(
+
+            summary,
+
+            source="episodic",
+
+            metadata={
+                "type": "qa_pair",
+                "session_id": self.session_id
+            },
+
+            session_id=self.session_id,
+
+            importance=0.6
+        )
     # ---------------------------------------------------------
     # MAIN AGENT LOOP
     # ---------------------------------------------------------
@@ -466,15 +560,32 @@ class AgenticRAG:
             seen_actions.add(
                 action_key
             )
+             # -------------------------------------------------
+            # Retrieve short-term conversation context
+            # -------------------------------------------------
 
+            recent_context = (
+                self._get_recent_context()
+            )
+
+            if verbose and recent_context:
+
+                print(
+                    "[Short-term memory] "
+                    f"{recent_context[:300]}..."
+                )
             # -------------------------------------------------
             # Execute action
             # -------------------------------------------------
 
             if action == "search_knowledge":
 
-                observation = self._search_knowledge(
+                contextual_query = self._build_contextual_query(
                     user_query
+                )
+
+                observation = self._search_knowledge(
+                    contextual_query
                 )
 
             elif action == "live_web_search":
